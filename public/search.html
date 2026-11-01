@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Search anime · Enjoy AniList</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <header class="site-header">
+    <h1 class="brand"><a class="brand-link" href="/">Enjoy AniList</a></h1>
+    <form class="search-wrap" id="searchForm" role="search">
+      <input id="animeSearch" type="search" placeholder="Search anime..." aria-label="Search anime" autocomplete="off" spellcheck="false">
+    </form>
+  </header>
+
+  <main>
+    <a class="back-link" href="/">← Back to trending</a>
+
+    <section class="section" aria-labelledby="resultsHeading">
+      <h2 class="section-heading" id="resultsHeading">Search results</h2>
+      <p class="status" id="searchStatus" aria-live="polite">Type a title to search AniList.</p>
+      <div class="results-grid" id="searchResults"></div>
+      <button type="button" class="load-more" id="loadMore" hidden>Load more results</button>
+    </section>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/axios@1.7.9/dist/axios.min.js"></script>
+  <script src="./anilist.js"></script>
+  <script>
+    const { PAGE_SIZE, searchAnime, createCard, renderCards } = window.AniList;
+
+    const searchForm = document.getElementById("searchForm");
+    const searchInput = document.getElementById("animeSearch");
+    const results = document.getElementById("searchResults");
+    const status = document.getElementById("searchStatus");
+    const loadMoreButton = document.getElementById("loadMore");
+
+    const DEBOUNCE_MS = 350;
+
+    let activeQuery = "";
+    let currentPage = 1;
+    let hasNextPage = false;
+    let controller = null;
+    let debounceTimer = null;
+    let requestId = 0;
+
+    function setStatus(message) {
+      status.textContent = message;
+    }
+
+    function setLoadMoreVisible(visible) {
+      loadMoreButton.hidden = !visible;
+      loadMoreButton.disabled = false;
+    }
+
+    function syncUrl(query) {
+      const url = query ? `search?q=${encodeURIComponent(query)}` : "search";
+      try {
+        history.replaceState(null, "", url);
+      } catch {
+        // file:// pages may reject history updates; the search still works.
+      }
+    }
+
+    function resultCount() {
+      return results.querySelectorAll(".card").length;
+    }
+
+    async function runSearch(query, { page = 1, append = false } = {}) {
+      const trimmed = query.trim();
+      activeQuery = trimmed;
+      currentPage = page;
+
+      if (!trimmed) {
+        controller?.abort();
+        controller = null;
+        requestId++;
+        results.replaceChildren();
+        setStatus("Type a title to search AniList.");
+        setLoadMoreVisible(false);
+        syncUrl("");
+        return;
+      }
+
+      // Cancel any in-flight request so a slow older search can't overwrite a newer one.
+      controller?.abort();
+      controller = new AbortController();
+      const thisRequest = ++requestId;
+
+      loadMoreButton.disabled = true;
+      setStatus(append
+        ? `Loading more results for “${trimmed}”…`
+        : `Searching for “${trimmed}”…`);
+
+      try {
+        const data = await searchAnime({
+          q: trimmed,
+          page,
+          perPage: PAGE_SIZE,
+          signal: controller.signal
+        });
+
+        if (thisRequest !== requestId) return;
+
+        const media = data.media || [];
+        hasNextPage = Boolean(data.pageInfo?.hasNextPage);
+
+        if (append) {
+          const fragment = document.createDocumentFragment();
+          media.forEach(anime => fragment.appendChild(createCard(anime)));
+          results.appendChild(fragment);
+        } else {
+          renderCards(results, media, `No anime found for “${trimmed}”.`);
+        }
+
+        const total = resultCount();
+        setStatus(total
+          ? `Showing ${total} result${total === 1 ? "" : "s"} for “${trimmed}”.`
+          : "");
+        setLoadMoreVisible(hasNextPage);
+        syncUrl(trimmed);
+      } catch (error) {
+        if (error.name === "AbortError" || thisRequest !== requestId) return;
+
+        console.error("Search failed:", error);
+        if (!append) results.replaceChildren();
+        setStatus(`Couldn't search for “${trimmed}”. Please try again.`);
+        setLoadMoreVisible(append && hasNextPage);
+      }
+    }
+
+    function scheduleSearch() {
+      clearTimeout(debounceTimer);
+      const value = searchInput.value;
+      debounceTimer = setTimeout(() => runSearch(value), DEBOUNCE_MS);
+    }
+
+    searchForm.addEventListener("submit", event => {
+      event.preventDefault();
+      clearTimeout(debounceTimer);
+      runSearch(searchInput.value);
+    });
+
+    searchInput.addEventListener("input", scheduleSearch);
+
+    loadMoreButton.addEventListener("click", () => {
+      if (!activeQuery || !hasNextPage) return;
+      runSearch(activeQuery, { page: currentPage + 1, append: true });
+    });
+
+    // Deep link support: search.html?q=naruto
+    const initialQuery = new URLSearchParams(window.location.search).get("q") || "";
+    if (initialQuery) {
+      searchInput.value = initialQuery;
+      runSearch(initialQuery);
+    }
+
+    searchInput.focus();
+  </script>
+</body>
+</html>

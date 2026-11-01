@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Anime · Enjoy AniList</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <header class="site-header">
+    <h1 class="brand"><a class="brand-link" href="/">Enjoy AniList</a></h1>
+    <form class="search-wrap" id="searchForm" role="search">
+      <input id="animeSearch" type="search" placeholder="Search anime..." aria-label="Search anime" autocomplete="off" spellcheck="false">
+    </form>
+  </header>
+
+  <main>
+    <a class="back-link" href="/">← Back to trending</a>
+
+    <p class="detail-status" id="detailStatus" aria-live="polite">Loading anime…</p>
+
+    <article id="detailView" hidden>
+      <div class="detail-hero">
+        <div class="detail-banner" id="detailBanner" aria-hidden="true"></div>
+        <div class="detail-hero-body">
+          <div class="detail-cover">
+            <img id="detailCover" alt="">
+          </div>
+          <div class="detail-headline">
+            <p class="detail-kicker" id="detailKicker"></p>
+            <h1 class="detail-title" id="detailTitle"></h1>
+            <p class="detail-alt-title" id="detailAltTitle"></p>
+            <div class="detail-badges" id="detailBadges"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="detail-layout">
+        <div class="detail-main">
+          <section aria-labelledby="synopsisHeading">
+            <h2 id="synopsisHeading">Synopsis</h2>
+            <div class="detail-description" id="detailDescription"></div>
+          </section>
+
+          <section aria-labelledby="charactersHeading">
+            <h2 id="charactersHeading">Characters</h2>
+            <div class="character-grid" id="characterGrid"></div>
+          </section>
+        </div>
+
+        <aside class="detail-side" aria-label="Anime details">
+          <section class="panel" aria-labelledby="statsHeading">
+            <h2 id="statsHeading">Stats</h2>
+            <dl class="stat-list" id="statList"></dl>
+          </section>
+
+          <section class="panel" aria-labelledby="ratingsHeading">
+            <h2 id="ratingsHeading">Ratings</h2>
+            <div class="rating-summary" id="ratingSummary"></div>
+            <div class="rating-bars" id="ratingBars"></div>
+          </section>
+        </aside>
+      </div>
+    </article>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/axios@1.7.9/dist/axios.min.js"></script>
+  <script src="./anilist.js"></script>
+  <script>
+    const { getAnime, formatLabel } = window.AniList;
+
+    const STATUS_LABELS = {
+      RELEASING: "Airing",
+      FINISHED: "Finished",
+      NOT_YET_RELEASED: "Not yet released",
+      CANCELLED: "Cancelled",
+      HIATUS: "On hiatus"
+    };
+
+    const SEASON_LABELS = {
+      WINTER: "Winter",
+      SPRING: "Spring",
+      SUMMER: "Summer",
+      FALL: "Fall"
+    };
+
+    const SOURCE_LABELS = {
+      ORIGINAL: "Original",
+      MANGA: "Manga",
+      LIGHT_NOVEL: "Light novel",
+      VISUAL_NOVEL: "Visual novel",
+      VIDEO_GAME: "Video game",
+      NOVEL: "Novel",
+      DOUJINSHI: "Doujinshi",
+      ANIME: "Anime",
+      WEB_NOVEL: "Web novel",
+      LIVE_ACTION: "Live action",
+      GAME: "Game",
+      COMIC: "Comic",
+      MULTIMEDIA_PROJECT: "Multimedia project",
+      PICTURE_BOOK: "Picture book",
+      OTHER: "Other"
+    };
+
+    const ROLE_LABELS = {
+      MAIN: "Main",
+      SUPPORTING: "Supporting",
+      BACKGROUND: "Background"
+    };
+
+    const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const fullNumber = new Intl.NumberFormat("en");
+    const compactNumber = new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 });
+
+    const els = {
+      status: document.getElementById("detailStatus"),
+      view: document.getElementById("detailView"),
+      banner: document.getElementById("detailBanner"),
+      cover: document.getElementById("detailCover"),
+      kicker: document.getElementById("detailKicker"),
+      title: document.getElementById("detailTitle"),
+      altTitle: document.getElementById("detailAltTitle"),
+      badges: document.getElementById("detailBadges"),
+      description: document.getElementById("detailDescription"),
+      characters: document.getElementById("characterGrid"),
+      stats: document.getElementById("statList"),
+      ratingSummary: document.getElementById("ratingSummary"),
+      ratingBars: document.getElementById("ratingBars")
+    };
+
+    function showError(message) {
+      els.view.hidden = true;
+      els.status.hidden = false;
+      els.status.classList.add("error");
+      els.status.textContent = message;
+    }
+
+    function formatDate(date) {
+      if (!date?.year) return null;
+      if (!date.month) return String(date.year);
+      const month = MONTHS[date.month - 1] || date.month;
+      return date.day ? `${month} ${date.day}, ${date.year}` : `${month} ${date.year}`;
+    }
+
+    function formatDateRange(start, end) {
+      const from = formatDate(start);
+      const to = formatDate(end);
+      if (from && to) return `${from} - ${to}`;
+      return from || to || null;
+    }
+
+    // AniList descriptions are HTML. Keep a small whitelist of tags, drop every
+    // attribute except safe links, so nothing executable can reach innerHTML.
+    const ALLOWED_TAGS = new Set([
+      "P", "BR", "B", "STRONG", "I", "EM", "U", "S",
+      "UL", "OL", "LI", "SMALL", "SPAN", "BLOCKQUOTE", "A"
+    ]);
+    const DROPPED_TAGS = new Set(["SCRIPT", "STYLE", "IFRAME", "OBJECT", "EMBED", "LINK", "META"]);
+
+    function sanitizeHtml(html) {
+      const doc = new DOMParser().parseFromString(`<div id="root">${html}</div>`, "text/html");
+      const root = doc.getElementById("root");
+      const walker = doc.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+      const toUnwrap = [];
+      const toDrop = [];
+
+      while (walker.nextNode()) {
+        const el = walker.currentNode;
+
+        if (DROPPED_TAGS.has(el.tagName)) {
+          toDrop.push(el);
+          continue;
+        }
+
+        if (!ALLOWED_TAGS.has(el.tagName)) {
+          toUnwrap.push(el);
+          continue;
+        }
+
+        const keepAttrs = el.tagName === "A" ? ["href", "target", "rel"] : [];
+        [...el.attributes].forEach(attr => {
+          if (!keepAttrs.includes(attr.name)) el.removeAttribute(attr.name);
+        });
+
+        if (el.tagName === "A") {
+          const href = el.getAttribute("href") || "";
+          if (!/^https?:\/\//i.test(href)) {
+            el.removeAttribute("href");
+          } else {
+            el.setAttribute("target", "_blank");
+            el.setAttribute("rel", "noopener noreferrer");
+          }
+        }
+      }
+
+      toDrop.forEach(el => el.remove());
+      toUnwrap.forEach(el => el.replaceWith(...el.childNodes));
+      return root.innerHTML;
+    }
+
+    function addBadge(text, className = "badge") {
+      const badge = document.createElement("span");
+      badge.className = className;
+      badge.textContent = text;
+      els.badges.appendChild(badge);
+    }
+
+    function addStat(label, value) {
+      if (value === null || value === undefined || value === "") return;
+      const term = document.createElement("dt");
+      term.textContent = label;
+      const detail = document.createElement("dd");
+      detail.textContent = value;
+      els.stats.append(term, detail);
+    }
+
+    function renderHero(media) {
+      const displayTitle =
+        media.title?.english || media.title?.romaji || media.title?.native || "Untitled anime";
+
+      document.title = `${displayTitle} · Enjoy AniList`;
+      els.title.textContent = displayTitle;
+
+      const altTitles = [media.title?.romaji, media.title?.native]
+        .filter(title => title && title !== displayTitle);
+      els.altTitle.textContent = altTitles.join(" · ");
+      els.altTitle.hidden = altTitles.length === 0;
+
+      const kicker = [
+        media.format ? formatLabel(media.format) : null,
+        media.seasonYear,
+        media.episodes ? `${media.episodes} eps` : null
+      ].filter(Boolean);
+      els.kicker.textContent = kicker.join(" · ");
+      els.kicker.hidden = kicker.length === 0;
+
+      const score = media.averageScore || media.meanScore;
+      if (score) {
+        const badge = document.createElement("span");
+        badge.className = "badge badge-score";
+        badge.textContent = `★ ${(score / 10).toFixed(1)}`;
+        badge.title = `Score ${score} out of 100`;
+        els.badges.appendChild(badge);
+      }
+
+      if (media.status) addBadge(STATUS_LABELS[media.status] || media.status);
+      if (media.season && media.seasonYear) {
+        addBadge(`${SEASON_LABELS[media.season] || media.season} ${media.seasonYear}`);
+      }
+      (media.genres || []).forEach(genre => addBadge(genre, "badge badge-genre"));
+
+      const coverUrl = media.coverImage?.extraLarge || media.coverImage?.large || "";
+      const coverWrap = els.cover.parentElement;
+
+      if (coverUrl) {
+        els.cover.src = coverUrl;
+        els.cover.alt = `${displayTitle} cover`;
+        els.cover.addEventListener("error", () => {
+          els.cover.remove();
+          coverWrap.textContent = "Cover unavailable";
+        }, { once: true });
+      } else {
+        els.cover.remove();
+        coverWrap.textContent = "Cover unavailable";
+      }
+
+      if (media.bannerImage) {
+        els.banner.style.backgroundImage = `url("${media.bannerImage}")`;
+      } else {
+        els.banner.classList.add("no-image");
+        if (media.coverImage?.color) {
+          els.banner.style.backgroundImage =
+            `linear-gradient(135deg, ${media.coverImage.color}, #eef1f7)`;
+        }
+      }
+    }
+
+    function renderSynopsis(media) {
+      if (!media.description) {
+        const empty = document.createElement("p");
+        empty.className = "empty-state";
+        empty.textContent = "No synopsis available.";
+        els.description.replaceChildren(empty);
+        return;
+      }
+      els.description.innerHTML = sanitizeHtml(media.description);
+    }
+
+    function renderStats(media) {
+      const studios = (media.studios?.nodes || []).map(studio => studio.name);
+      const score = media.averageScore ? `${(media.averageScore / 10).toFixed(1)} / 10` : null;
+      const mean = media.meanScore ? `${(media.meanScore / 10).toFixed(1)} / 10` : null;
+
+      addStat("Score", score);
+      addStat("Mean score", mean);
+      addStat("Popularity", media.popularity ? fullNumber.format(media.popularity) : null);
+      addStat("Favourites", media.favourites ? fullNumber.format(media.favourites) : null);
+      addStat("Episodes", media.episodes || null);
+      addStat("Episode length", media.duration ? `${media.duration} min` : null);
+      addStat("Status", media.status ? (STATUS_LABELS[media.status] || media.status) : null);
+      addStat("Aired", formatDateRange(media.startDate, media.endDate));
+      addStat("Studio", studios.length ? studios.join(", ") : null);
+      addStat("Source", media.source ? (SOURCE_LABELS[media.source] || media.source) : null);
+    }
+
+    function renderRatings(media) {
+      const distribution = (media.stats?.scoreDistribution || [])
+        .filter(entry => entry.amount > 0)
+        .sort((a, b) => a.score - b.score);
+
+      const totalVotes = distribution.reduce((sum, entry) => sum + entry.amount, 0);
+      const score = media.averageScore || media.meanScore;
+
+      els.ratingSummary.replaceChildren();
+
+      if (score) {
+        const strong = document.createElement("strong");
+        strong.textContent = (score / 10).toFixed(1);
+        els.ratingSummary.appendChild(strong);
+      }
+
+      if (score || totalVotes) {
+        const caption = document.createElement("span");
+        caption.textContent = [
+          score ? "/ 10 average" : null,
+          totalVotes ? `${compactNumber.format(totalVotes)} votes` : null
+        ].filter(Boolean).join(" · ");
+        els.ratingSummary.appendChild(caption);
+      }
+
+      els.ratingBars.replaceChildren();
+
+      if (!distribution.length) {
+        const empty = document.createElement("p");
+        empty.className = "empty-state";
+        empty.textContent = "No rating data yet.";
+        els.ratingBars.appendChild(empty);
+        return;
+      }
+
+      const maxAmount = Math.max(...distribution.map(entry => entry.amount));
+
+      distribution.forEach(entry => {
+        const row = document.createElement("div");
+        row.className = "rating-row";
+        row.title = `${fullNumber.format(entry.amount)} votes for ${entry.score}/100`;
+
+        const label = document.createElement("span");
+        label.textContent = entry.score;
+
+        const track = document.createElement("span");
+        track.className = "rating-track";
+
+        const fill = document.createElement("span");
+        fill.className = "rating-fill";
+        fill.style.width = `${Math.max(2, (entry.amount / maxAmount) * 100)}%`;
+
+        track.appendChild(fill);
+
+        const amount = document.createElement("span");
+        amount.className = "rating-amount";
+        amount.textContent = compactNumber.format(entry.amount);
+
+        row.append(label, track, amount);
+        els.ratingBars.appendChild(row);
+      });
+    }
+
+    function characterCard(edge) {
+      const character = edge.node;
+      const name = character?.name?.full || "Unknown character";
+
+      const card = document.createElement("div");
+      card.className = "character-card";
+
+      const avatar = document.createElement("div");
+      avatar.className = "character-avatar";
+
+      if (character?.image?.large) {
+        const image = document.createElement("img");
+        image.src = character.image.large;
+        image.alt = name;
+        image.loading = "lazy";
+        image.decoding = "async";
+        avatar.appendChild(image);
+      } else {
+        avatar.textContent = name.charAt(0);
+        avatar.style.display = "grid";
+        avatar.style.placeItems = "center";
+        avatar.style.color = "var(--muted)";
+        avatar.style.fontSize = "0.95rem";
+        avatar.style.fontWeight = "600";
+      }
+
+      const info = document.createElement("div");
+      info.className = "character-info";
+
+      const nameEl = document.createElement("p");
+      nameEl.className = "character-name";
+      nameEl.textContent = name;
+      nameEl.title = name;
+
+      const roleEl = document.createElement("p");
+      roleEl.className = "character-role";
+      roleEl.textContent = ROLE_LABELS[edge.role] || edge.role || "Cast";
+
+      info.append(nameEl, roleEl);
+
+      const voiceActor = edge.voiceActors?.[0];
+      if (voiceActor?.name?.full) {
+        const vaEl = document.createElement("p");
+        vaEl.className = "character-va";
+        vaEl.textContent = `VA: ${voiceActor.name.full}`;
+        vaEl.title = voiceActor.name.full;
+        info.appendChild(vaEl);
+      }
+
+      card.append(avatar, info);
+      return card;
+    }
+
+    function renderCharacters(media) {
+      const edges = media.characters?.edges || [];
+      els.characters.replaceChildren();
+
+      if (!edges.length) {
+        const empty = document.createElement("p");
+        empty.className = "empty-state";
+        empty.textContent = "No character data available.";
+        els.characters.appendChild(empty);
+        return;
+      }
+
+      const fragment = document.createDocumentFragment();
+      edges.forEach(edge => fragment.appendChild(characterCard(edge)));
+      els.characters.appendChild(fragment);
+    }
+
+    function render(media) {
+      renderHero(media);
+      renderSynopsis(media);
+      renderStats(media);
+      renderRatings(media);
+      renderCharacters(media);
+
+      els.status.hidden = true;
+      els.view.hidden = false;
+    }
+
+    async function loadAnime(id) {
+      try {
+        const data = await getAnime(id);
+        const media = data.media;
+
+        if (!media) {
+          showError("That anime could not be found.");
+          return;
+        }
+
+        render(media);
+      } catch (error) {
+        console.error("Failed to load anime:", error);
+        showError(error.status === 404
+          ? "That anime could not be found."
+          : "Couldn't load this anime. Please try again.");
+      }
+    }
+
+    document.getElementById("searchForm").addEventListener("submit", event => {
+      event.preventDefault();
+      const query = document.getElementById("animeSearch").value.trim();
+      if (!query) return;
+      window.location.href = `search?q=${encodeURIComponent(query)}`;
+    });
+
+    const animeId = Number.parseInt(new URLSearchParams(window.location.search).get("id"), 10);
+
+    if (Number.isInteger(animeId) && animeId > 0) {
+      loadAnime(animeId);
+    } else {
+      showError("No anime selected. Pick one from the home page or search.");
+    }
+  </script>
+</body>
+</html>

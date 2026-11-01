@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Enjoy AniList</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <header class="site-header">
+    <h1 class="brand">Enjoy AniList</h1>
+    <form class="search-wrap" id="searchForm" role="search">
+      <input id="animeSearch" type="search" placeholder="Search anime..." aria-label="Search anime" autocomplete="off" spellcheck="false">
+    </form>
+  </header>
+
+  <main>
+    <section class="section" aria-labelledby="trendingHeading">
+      <h2 class="section-heading" id="trendingHeading">Trending now</h2>
+      <div class="carousel-viewport" id="trendingViewport">
+        <div class="card-container" id="trendingAnimes">
+          <p class="empty-state">Loading trending anime…</p>
+        </div>
+      </div>
+      <p class="status" id="trendingStatus" aria-live="polite"></p>
+    </section>
+
+    <section class="section" aria-labelledby="popularHeading">
+      <h2 class="section-heading" id="popularHeading">All-time popular</h2>
+      <p class="section-subtitle">Fan favourites, old and new.</p>
+      <div class="carousel-viewport" id="popularViewport">
+        <div class="card-container" id="popularAnimes">
+          <p class="empty-state">Loading popular anime…</p>
+        </div>
+      </div>
+      <p class="status" id="popularStatus" aria-live="polite"></p>
+    </section>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/axios@1.7.9/dist/axios.min.js"></script>
+  <script src="./anilist.js"></script>
+  <script>
+    const { PAGE_SIZE, getHomeSections, renderCards } = window.AniList;
+
+    const homeSections = [
+      {
+        key: "trending",
+        containerId: "trendingAnimes",
+        statusId: "trendingStatus",
+        label: "trending anime"
+      },
+      {
+        key: "popular",
+        containerId: "popularAnimes",
+        statusId: "popularStatus",
+        label: "popular anime"
+      }
+    ];
+
+    async function loadHomeSections() {
+      homeSections.forEach(section => {
+        document.getElementById(section.statusId).textContent = "";
+      });
+
+      try {
+        const data = await getHomeSections({ page: 1, perPage: PAGE_SIZE });
+
+        homeSections.forEach(section => {
+          renderCards(section.containerId, data[section.key] || []);
+        });
+      } catch (error) {
+        console.error("Failed to load anime sections:", error);
+        homeSections.forEach(section => {
+          document.getElementById(section.containerId).replaceChildren();
+          document.getElementById(section.statusId).textContent =
+            `Couldn't load ${section.label}. Please refresh to try again.`;
+        });
+      }
+    }
+
+    // The home page only routes searches; search.html does the querying.
+    document.getElementById("searchForm").addEventListener("submit", event => {
+      event.preventDefault();
+      const query = document.getElementById("animeSearch").value.trim();
+      if (!query) return;
+      window.location.href = `search?q=${encodeURIComponent(query)}`;
+    });
+
+    // Optional click-and-drag scrolling for the poster rows. A drag must not
+    // trigger the card links, so suppress the click that follows a real drag.
+    document.querySelectorAll(".carousel-viewport").forEach(viewport => {
+      let isDown = false;
+      let dragged = false;
+      let startX = 0;
+      let scrollStart = 0;
+
+      viewport.addEventListener("pointerdown", event => {
+        if (event.pointerType === "mouse" && event.button !== 0) return;
+        isDown = true;
+        dragged = false;
+        startX = event.clientX;
+        scrollStart = viewport.scrollLeft;
+      });
+
+      viewport.addEventListener("pointermove", event => {
+        if (!isDown) return;
+        if (Math.abs(event.clientX - startX) > 5) dragged = true;
+        viewport.scrollLeft = scrollStart - (event.clientX - startX);
+      });
+
+      viewport.addEventListener("click", event => {
+        if (!dragged) return;
+        event.preventDefault();
+        event.stopPropagation();
+        dragged = false;
+      }, true);
+
+      ["pointerup", "pointerleave", "pointercancel"].forEach(type => {
+        viewport.addEventListener(type, () => { isDown = false; });
+      });
+    });
+
+    loadHomeSections();
+  </script>
+</body>
+</html>
